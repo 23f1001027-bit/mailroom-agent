@@ -114,8 +114,14 @@ check("duplicate receipt rejected", post(commit_body(eid, dg, good[:-1] + [good[
 bad = json.loads(json.dumps(good))
 bad[1]["proposalDigest"] = "0" * 64
 check("wrong proposalDigest rejected", post(commit_body(eid, dg, bad)).status_code == 400)
+bad = json.loads(json.dumps(good))
+bad[0]["extra"] = "x"
+check("unknown receipt field rejected", post(commit_body(eid, dg, bad)).status_code == 400)
+bad = json.loads(json.dumps(good))
+bad[0]["receiptSignature"] = "!!!notbase64!!!"
+check("garbage signature rejected", post(commit_body(eid, dg, bad)).status_code == 400)
 check("unknown evaluation rejected", post(commit_body("nope-" + eid, dg, good)).status_code == 404)
-check("wrong inputDigest rejected", post(commit_body(eid, "0" * 64, good)).status_code == 409)
+check("wrong inputDigest rejected", post(commit_body(eid, "0" * 64, good)).status_code == 400)
 
 c = post(commit_body(eid, dg, good))
 check("commit 200 completed", c.status_code == 200 and c.json()["status"] == "completed", c.text[:200])

@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+httpx
+cryptography
+psycopg[binary]

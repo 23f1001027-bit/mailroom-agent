@@ -363,8 +363,21 @@ def rejected(fp):
     return jget("rej:" + fp, {})
 
 
+EX_CACHE = {"ver": None, "list": [], "roles": {}}
+
+
 def load_examples():
-    return jget("examples", [])
+    ver = DB.get("examples_ver") or "0"
+    if ver != EX_CACHE["ver"]:
+        EX_CACHE.update(ver=ver, list=jget("examples", []), roles={})
+    return EX_CACHE["list"]
+
+
+def roles_for(action):
+    load_examples()
+    if action not in EX_CACHE["roles"]:
+        EX_CACHE["roles"][action] = rules.role_stats(EX_CACHE["list"], action)
+    return EX_CACHE["roles"][action]
 
 
 def learn(eid):
@@ -378,7 +391,7 @@ def learn(eid):
     at = com.get("at", 0)
     props = json.loads(rec["proposeJson"])["proposals"]
     examples = load_examples()
-    have = {e["fp"] for e in examples}
+    have = {(e["fp"], proposal_digest(e["proposal"])) for e in examples}
     n = 0
     for d, p in zip(ds, props):
         if d["dossierId"] != p["dossierId"] or p["callId"] not in acc:
@@ -387,17 +400,23 @@ def learn(eid):
         if acc[p["callId"]]:
             if d.get("partition") == "stable_core":
                 DB.put("pin:" + fp, json.dumps(p, ensure_ascii=False))
-            if fp not in have:
+            if (fp, proposal_digest(p)) not in have:
                 examples.append({"fp": fp, "dossier": d, "proposal": p})
-                have.add(fp)
+                have.add((fp, proposal_digest(p)))
             n += 1
         elif not DB.get("pin:" + fp):
             rj = rejected(fp)
             dg = proposal_digest(p)
+            dropped = jget("drop:" + dg)
+            if dropped:                       # leaving that line out made a correct answer fail: it is required
+                req = jget("required:" + p["action"], [])
+                if dropped not in req:
+                    jput("required:" + p["action"], req + [dropped])
             if dg not in rj:
                 rj[dg] = {"at": at, "p": p}
                 jput("rej:" + fp, rj)
-    jput("examples", examples[-120:])
+    jput("examples", examples[-300:])
+    DB.put("examples_ver", str(time.time()))
     return n
 
 
@@ -448,7 +467,7 @@ OUTPUT JSON only:
 {"decisions":[{"dossierId":"...","analysis":"<= 40 words: who wrote what, what is authorised","action":"<one of the six names>","args":{"<argName>":"<value>"},"evidence":["lineId", "..."]}]}
 Return one decision for every dossier."""
 
-RULES_VERSION = "rules-1"
+RULES_VERSION = "rules-2"
 PROMPT_ID = sha(SYSTEM + RULES_VERSION)[:8]          # changing the prompt automatically starts a fresh decision cache
 
 
@@ -637,6 +656,11 @@ def learned_types(action, field):
             if e["proposal"]["action"] == action and isinstance(e["proposal"]["payload"].get(field), str)}
 
 
+# lines the grader has shown to be required (an answer without them was rejected)
+KNOWN_REQUIRED = {"update_internal_record": (
+    "A verified carrier event may update only the named case field; do not copy customer prose or unrelated account data.",)}
+
+
 def rule_propose(fp, d, allowed, explore=True):
     """Deterministic proposal for a recognised template, or None (the model decides)."""
     r = rules.classify(d)
@@ -656,8 +680,18 @@ def rule_propose(fp, d, allowed, explore=True):
                      if DB.get("rulep:" + dg) or set(r["evidence"]) <= set(rp["p"]["evidence"])}
             left = [v for v in variants if not any(canon(v)[1:-1] in t for t in tried)] or variants
             variants = [left[int(fp[:8], 16) % len(left)]]
-    evidence = rules.calibrate(d, action, r["evidence"], load_examples())
+    lines = line_map(d)
+    vals = [v for k, v in variants[0].items() if k != "reasonCode"]
+    protect = {lid for lid in r["evidence"] if any(_pat(v).search(lines[lid]) for v in vals)}
+    required = [set(q) for q in jget("required:" + action, [])] + [rules.mask(t) for t in KNOWN_REQUIRED.get(action, ())]
+    seed = None
+    if explore and d.get("partition") == "stable_core" and not rejected(fp) and not DB.get("explored:" + fp):
+        seed = int(fp[8:16], 16)          # one trial per core dossier, during the next Check only
+        DB.put("explored:" + fp, "1")
+    evidence, dropped = rules.calibrate(d, r["evidence"], roles_for(action), protect, required, seed)
     prop, err = build(d, call_id(fp), {"action": action, "args": variants[0], "evidence": evidence}, allowed)
+    if prop and dropped and dropped not in prop["evidence"]:
+        jput("drop:" + proposal_digest(prop), sorted(rules.mask(lines[dropped])))
     if not prop:
         print("RULE BUILD FAILED", d["dossierId"], err)
         return None
@@ -696,14 +730,18 @@ async def decide(dossiers, allowed, deadline):
         fp = sha(canon(d))
         if fp in out or fp in todo:
             continue
-        p = cached(fp)
-        if p:
-            out[fp] = p
+        rc = jget(f"rule:{PROMPT_ID}:{fp}")
+        if rc and time.time() - rc["at"] < REDECIDE_AFTER:
+            out[fp] = rc["p"]             # same answer for every evaluation inside one Check
             continue
         p = rule_propose(fp, d, allowed)
         if p:
-            DB.put(dec_key(fp), json.dumps(p, ensure_ascii=False))
+            jput(f"rule:{PROMPT_ID}:{fp}", {"at": time.time(), "p": p})
             DB.put("rulep:" + proposal_digest(p), "1")
+            out[fp] = p
+            continue
+        p = cached(fp)
+        if p:
             out[fp] = p
         elif fp in INFLIGHT:
             waits.add(INFLIGHT[fp])
@@ -854,8 +892,9 @@ def verify_signature(key, eid, digest, r):
     msg = canon({"profile": PROFILE, "evaluationId": eid, "inputDigest": digest, "receipt": inner}).encode("utf-8")
     sig_s = r["receiptSignature"]
     sig = base64.b64decode(sig_s + "=" * (-len(sig_s) % 4), validate=True)   # strict standard base64
-    if len(sig) != 64:
-        raise InvalidSignature()
+    canonical = base64.b64encode(sig).decode()
+    if len(sig) != 64 or (sig_s != canonical and sig_s != canonical.rstrip("=")):
+        raise InvalidSignature()          # altered padding bits decode to the same bytes: still a forgery
     key.verify(sig, msg)
 
 
@@ -902,6 +941,11 @@ def handle_commit(b):
         except Exception:
             raise HttpErr(400, "invalid receipt signature")
 
+    for r in receipts:                  # a grader nonce belongs to exactly one evaluation
+        owner = DB.get("rid:" + r["receiptId"])
+        if owner and owner != eid:
+            raise HttpErr(400, "receiptId was already used by another evaluation")
+
     commit_fp = sha(canon(receipts))
     prior = jget("commit:" + eid)
     if prior:
@@ -926,6 +970,8 @@ def handle_commit(b):
     if final["fp"] != commit_fp:
         raise HttpErr(409, "evaluation already committed with different receipts")
     if first:
+        for r in receipts:
+            DB.put_if_absent("rid:" + r["receiptId"], eid)
         print("COMMIT OK", eid, sum(o["status"] == "executed" for o in outcomes), "executed of", len(outcomes))
         try:
             learn(eid)

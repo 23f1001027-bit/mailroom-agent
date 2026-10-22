@@ -237,19 +237,34 @@ def role_stats(examples, action):
     return roles
 
 
-def calibrate(d, action, evidence, examples):
-    roles = role_stats(examples, action)
+def best_role(roles, m):
     if not roles:
-        return evidence
-    out = []
-    for lid, t, _s in lines_of(d):
-        m = mask(t)
-        best = max(roles, key=lambda r: jac(r[0], m))
-        known = jac(best[0], m) >= 0.75
-        if lid in evidence:
-            if known and best[1] < best[2] and best[1] == 0:
-                continue                      # accepted examples never needed this kind of line
-            out.append(lid)
-        elif known and best[1] == best[2] and best[2] > 0:
-            out.append(lid)                   # every accepted example cited this kind of line
-    return out or evidence
+        return None
+    r = max(roles, key=lambda r: jac(r[0], m))
+    return r if jac(r[0], m) >= 0.75 else None
+
+
+def calibrate(d, evidence, roles, protect=(), required=(), seed=None):
+    """Trim default evidence using grader-accepted examples of the same action.
+
+    A kind of line that some accepted answer left out is evidently not required, so it is dropped.
+    Lines that carry an argument value (protect) are always kept.  With a seed (stable core
+    dossiers only), one line whose necessity is still unknown is left out on purpose: if the grader
+    accepts that answer, the line is learned as unnecessary for every later dossier.
+    Returns (evidence, dropped_line_or_None)."""
+    text = {lid: t for lid, t, _s in lines_of(d)}
+    out, unknown = [], []
+    for lid in evidence:
+        m = mask(text[lid])
+        r = best_role(roles, m)
+        if lid not in protect and r and r[1] < r[2]:
+            continue                      # an accepted answer did without this kind of line
+        out.append(lid)
+        if lid not in protect and not any(jac(q, m) >= 0.75 for q in required):
+            unknown.append(lid)
+    if seed is not None and unknown:
+        k = seed % (len(unknown) + 1)
+        if k < len(unknown):
+            out.remove(unknown[k])
+            return out, unknown[k]
+    return out, None

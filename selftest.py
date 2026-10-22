@@ -120,6 +120,12 @@ check("unknown receipt field rejected", post(commit_body(eid, dg, bad)).status_c
 bad = json.loads(json.dumps(good))
 bad[0]["receiptSignature"] = "!!!notbase64!!!"
 check("garbage signature rejected", post(commit_body(eid, dg, bad)).status_code == 400)
+bad = json.loads(json.dumps(good))
+sg = bad[0]["receiptSignature"]
+alt = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+last = sg.rstrip("=")[-1]
+bad[0]["receiptSignature"] = sg.rstrip("=")[:-1] + alt[alt.index(last) ^ 1] + sg[len(sg.rstrip("=")):]
+check("padding-bit forged signature rejected", post(commit_body(eid, dg, bad)).status_code == 400)
 check("unknown evaluation rejected", post(commit_body("nope-" + eid, dg, good)).status_code == 404)
 check("wrong inputDigest rejected", post(commit_body(eid, "0" * 64, good)).status_code == 400)
 
@@ -132,6 +138,14 @@ check("commit replay identical", c2.status_code == 200 and c2.content == c.conte
 other = [receipt(eid, dg, p, accepted=True) for p in props]
 check("different receipts after commit -> 409", post(commit_body(eid, dg, other)).status_code == 409)
 
+eid3 = "eval-" + uuid.uuid4().hex[:8]
+res3 = post(propose_body(eid3, ds)).json()
+reuse = [receipt(eid3, res3["inputDigest"], p) for p in res3["proposals"]]
+reuse[0]["receiptId"] = good[0]["receiptId"]
+inner = {k: v for k, v in reuse[0].items() if k != "receiptSignature"}
+reuse[0]["receiptSignature"] = base64.b64encode(priv.sign(canon({"profile": PROFILE, "evaluationId": eid3,
+    "inputDigest": res3["inputDigest"], "receipt": inner}).encode())).decode()
+check("nonce from another evaluation rejected", post(commit_body(eid3, res3["inputDigest"], reuse)).status_code == 400)
 check("garbage body -> 400", post(None, raw="not json").status_code == 400)
 check("array body -> 400", post(None, raw="[1,2]").status_code == 400)
 check("bad operation -> 400", post({"profile": PROFILE, "operation": "delete", "evaluationId": "x"}).status_code == 400)

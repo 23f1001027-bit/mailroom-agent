@@ -175,7 +175,10 @@ def r_draft(d):
     if len({e for _l, e in sender}) > 1 or re.search(r"claims? to be|on behalf of|impersonat|look-?alike|i am the",
                                                      " ".join(t for _l, t, _s in ext), re.I):
         return None                          # identity question: let the model reason about it
-    ev = [req[0][0], sender[0][0], rec_lid] + pol
+    # an authentic approval that does not cover this sender/status: cite why it cannot be used to send
+    scope = [lid for lid, t, s in lines_of(d) if is_trusted(s) and (s.get("kind") or "") == "approval"
+             and "unrelated" not in t and re.search(r"does not (permit|cover)|not to the current|earlier|not scoped|but permits", t, re.I)]
+    ev = [req[0][0], sender[0][0], rec_lid] + pol + scope
     return {"action": "create_draft",
             "variants": [{"recipient": sender[0][1], "referenceId": order, "status": cur}], "evidence": ev,
             "kind": "draft"}

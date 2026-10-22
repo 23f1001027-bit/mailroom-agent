@@ -1022,13 +1022,18 @@ def dryrun(key: str = "", show: int = 3):
 
 
 @app.get("/debug")
-def debug(key: str = "", n: int = 0, limit: int = 14, only: str = "", part: str = "", fmt: str = "text"):
+def debug(key: str = "", n: int = 0, limit: int = 14, only: str = "", part: str = "", fmt: str = "text", id: str = ""):
     """Latest evaluation: each dossier, our proposal, and whether the grader's receipt accepted it.
     Disabled unless DEBUG_KEY is set. ?key=..  &n=0 (latest) &limit=14 &only=accepted|rejected
     &part=fresh_audit|stable_core &fmt=json"""
     if not _auth(key):
         return JSONResponse({"error": "not found"}, status_code=404)
     recent = jget("recent", [])
+    if id:                                  # find the latest evaluation that contains this dossier
+        for i, e in enumerate(recent):
+            if any(d["dossierId"] == id for d in jget("dossiers:" + e) or []):
+                n = i
+                break
     if n >= len(recent):
         return JSONResponse({"error": "no such evaluation", "recent": recent}, status_code=404)
     eid = recent[n]
@@ -1041,6 +1046,8 @@ def debug(key: str = "", n: int = 0, limit: int = 14, only: str = "", part: str 
     items = [(d, p, acc.get(p["callId"])) for d, p in zip(ds, json.loads(rec["proposeJson"])["proposals"])]
     if part:
         items = [x for x in items if x[0].get("partition") == part]
+    if id:
+        items = [x for x in items if x[0]["dossierId"] == id]
     if only in ("accepted", "rejected"):
         sel = [x for x in items if x[2] is (only == "accepted")][:limit]
     else:

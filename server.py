@@ -651,7 +651,9 @@ def rule_propose(fp, d, allowed, explore=True):
             variants = good
         elif explore and d.get("partition") == "stable_core":
             # no accepted example yet: spread the candidates over core dossiers so one Check finds the right one
-            tried = {canon(rp["p"]["payload"]) for dg, rp in rejected(fp).items() if DB.get("rulep:" + dg)}
+            # payloads the grader rejected although the evidence covered ours, so the payload itself was wrong
+            tried = {canon(rp["p"]["payload"]) for dg, rp in rejected(fp).items()
+                     if DB.get("rulep:" + dg) or set(r["evidence"]) <= set(rp["p"]["evidence"])}
             left = [v for v in variants if not any(canon(v)[1:-1] in t for t in tried)] or variants
             variants = [left[int(fp[:8], 16) % len(left)]]
     evidence = rules.calibrate(d, action, r["evidence"], load_examples())
@@ -981,7 +983,7 @@ def dryrun(key: str = "", show: int = 3):
     if not _auth(key):
         return JSONResponse({"error": "not found"}, status_code=404)
     allowed = set(SPEC)
-    stats_, seen, unhandled, wrong = {}, set(), [], []
+    stats_, seen, unhandled, wrong, same_rej = {}, set(), [], [], []
     for eid in jget("recent", []):
         rec, ds, com = jget("eval:" + eid), jget("dossiers:" + eid), jget("commit:" + eid)
         if not (rec and ds and com):
@@ -1010,8 +1012,11 @@ def dryrun(key: str = "", show: int = 3):
                     wrong.append(render(d) + f"\nACCEPTED: {describe(old)}\nRULES:    {describe(new)}")
             elif view(new) == view(old):
                 st["sameAsRejected"] += 1
+                if len(same_rej) < show:
+                    same_rej.append(f"{d['dossierId']} REJECTED: {describe(old)}\n   RULES now: {describe(new)}")
     out = ["DRYRUN: rules vs stored grader verdicts (unique dossiers)", json.dumps(stats_, indent=1), ""]
     out += ["--- RULES DISAGREE WITH AN ACCEPTED ANSWER ---"] + wrong + [""]
+    out += ["--- RULES REPEAT A REJECTED ANSWER (payload; evidence may differ) ---"] + same_rej + [""]
     out += ["--- NOT HANDLED BY RULES (model decides) ---"] + unhandled
     return Response("\n\n".join(out), media_type="text/plain; charset=utf-8")
 

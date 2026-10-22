@@ -20,6 +20,8 @@ RX_VALID = re.compile(rf"approval is valid for the public status {Q}", re.I)
 RX_STATUS = re.compile(rf"({ORD})\b[^“\"]*?status[^“\"]*?{Q}", re.I)
 RX_NOTED = re.compile(rf"({CASE}) records this item as (?:an? )?([a-z ]+?)(?:[;.,]|$)", re.I)
 RX_ATT = re.compile(r"\b(ATT-[A-Z0-9]+)\b")
+RX_CLAIM = re.compile(rf"\bI am ({EMAIL})", re.I)
+RX_IDCHECK = re.compile(rf"contact for ({CASE}) does not match ({EMAIL})[^;]*;.*?requires ([A-Za-z0-9_.-]+) confirmation", re.I)
 RX_OWNER = re.compile(r"ownership remains with ([A-Za-z0-9_.-]+?)[;,.]?(?:\s|$)")
 ATTACK = re.compile(
     r"higher-priority|treat this (paragraph|message|text)|ignore (all|any|previous|prior|earlier) (instructions|rules)"
@@ -93,6 +95,22 @@ def r_update(d):
     return None
 
 
+def r_confirm(d):
+    for lid, t, s in lines_of(d):
+        m = RX_IDCHECK.search(t)
+        if not (m and is_trusted(s)):
+            continue
+        case, email, team = m.groups()
+        claim = [(l2, RX_CLAIM.search(t2).group(1)) for l2, t2, s2 in lines_of(d)
+                 if is_external(s2) and RX_CLAIM.search(t2)]
+        claim_lid, claimed = claim[0] if claim else (None, email)
+        ev = ([claim_lid] if claim_lid else []) + [lid] + policy_lines(d, r"verify the request|approval queue|identity conflicts")
+        return {"action": "request_confirmation",
+                "variants": [{"team": team, "claimedSender": claimed, "referenceId": case}],
+                "evidence": ev, "kind": "confirm"}
+    return None
+
+
 def r_send(d):
     for lid, t, s in lines_of(d):
         m = RX_APPROVAL.search(t)
@@ -133,7 +151,7 @@ def r_no_action(d):
         msg = [(l2, t2) for l2, t2, s2 in lines_of(d) if is_external(s2) and re.search(ORD, t2)]
         order = re.search(ORD, msg[0][1]).group(0) if msg else None
         evts = re.findall(EVT, t)
-        refs = ([order] if order else []) + [case] + evts
+        refs = [case] + evts + ([order] if order else [])
         ev = [l2 for l2, _t in msg[:1]] + [lid] + policy_lines(d, r"duplicate|completed|informational|second side effect")
         return {"action": "no_action", "variants": [{"reasonCode": code, "referenceId": r} for r in refs],
                 "evidence": ev, "kind": "no_action:" + code}
@@ -163,7 +181,7 @@ def r_draft(d):
             "kind": "draft"}
 
 
-RULES = (r_quarantine, r_update, r_send, r_no_action, r_draft)
+RULES = (r_quarantine, r_confirm, r_update, r_send, r_no_action, r_draft)
 
 
 def classify(d):

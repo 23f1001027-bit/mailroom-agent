@@ -126,7 +126,7 @@ alt = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 last = sg.rstrip("=")[-1]
 bad[0]["receiptSignature"] = sg.rstrip("=")[:-1] + alt[alt.index(last) ^ 1] + sg[len(sg.rstrip("=")):]
 check("padding-bit forged signature rejected", post(commit_body(eid, dg, bad)).status_code == 400)
-check("unknown evaluation rejected", post(commit_body("nope-" + eid, dg, good)).status_code == 404)
+check("unknown evaluation rejected", post(commit_body("nope-" + eid, dg, good)).status_code == 400)
 check("wrong inputDigest rejected", post(commit_body(eid, "0" * 64, good)).status_code == 400)
 
 c = post(commit_body(eid, dg, good))

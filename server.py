@@ -685,9 +685,10 @@ def rule_propose(fp, d, allowed, explore=True):
     protect = {lid for lid in r["evidence"] if any(_pat(v).search(lines[lid]) for v in vals)}
     required = [set(q) for q in jget("required:" + action, [])] + [rules.mask(t) for t in KNOWN_REQUIRED.get(action, ())]
     seed = None
-    if explore and d.get("partition") == "stable_core" and not rejected(fp) and not DB.get("explored:" + fp):
-        seed = int(fp[8:16], 16)          # one trial per core dossier, during the next Check only
-        DB.put("explored:" + fp, "1")
+    if explore and d.get("partition") == "stable_core" and not DB.get("explored2:" + fp) \
+            and not any(DB.get("drop:" + dg) for dg in rejected(fp)):
+        seed = int(fp[16:24], 16)         # one more trial per core dossier, during the next Check only
+        DB.put("explored2:" + fp, "1")
     evidence, dropped = rules.calibrate(d, r["evidence"], roles_for(action), protect, required, seed)
     prop, err = build(d, call_id(fp), {"action": action, "args": variants[0], "evidence": evidence}, allowed)
     if prop and dropped and dropped not in prop["evidence"]:
@@ -902,7 +903,7 @@ def handle_commit(b):
     eid = b["evaluationId"]
     raw = DB.get("eval:" + eid)
     if not raw:
-        raise HttpErr(404, "unknown evaluation")
+        raise HttpErr(400, "unknown evaluation")
     rec = json.loads(raw)
     if b.get("inputDigest") != rec["digest"]:
         raise HttpErr(400, "inputDigest does not match this evaluation")

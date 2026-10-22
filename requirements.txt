@@ -1,5 +1,5 @@
-fastapi==0.115.6
-uvicorn==0.34.0
-httpx==0.28.1
-cryptography==44.0.0
-psycopg[binary]==3.2.3
+fastapi>=0.115
+uvicorn>=0.34
+httpx>=0.28
+cryptography>=44
+psycopg[binary]>=3.2.10

@@ -33,7 +33,7 @@ import rules
 PROFILE = "ga5-mailroom-action-gate/v2"
 API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("LLM_API_KEY") or os.environ.get("AIPIPE_TOKEN", "")
 LLM_URL = os.environ.get("LLM_URL", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
-LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-2.5-flash")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-3.8-flash")
 LLM_REASONING = os.environ.get("LLM_REASONING", "")   # "", none, low, medium, high
 MOCK = os.environ.get("MOCK_MODEL") == "1"          # local protocol tests only
 DATABASE_URL = os.environ.get("DATABASE_URL", "")     # Postgres (Render). Empty -> SQLite
@@ -376,15 +376,8 @@ def load_examples():
 def patterns_for(action):
     load_examples()
     if action not in EX_CACHE["patterns"]:
-        EX_CACHE["patterns"][action] = rules.accepted_patterns(EX_CACHE["list"], action)
+        EX_CACHE["patterns"][action] = rules.accepted_role_sets(EX_CACHE["list"], action)
     return EX_CACHE["patterns"][action]
-
-
-def roles_for(action):
-    load_examples()
-    if action not in EX_CACHE["roles"]:
-        EX_CACHE["roles"][action] = rules.role_stats(EX_CACHE["list"], action)
-    return EX_CACHE["roles"][action]
 
 
 def learn(eid):
@@ -474,7 +467,7 @@ OUTPUT JSON only:
 {"decisions":[{"dossierId":"...","analysis":"<= 40 words: who wrote what, what is authorised","action":"<one of the six names>","args":{"<argName>":"<value>"},"evidence":["lineId", "..."]}]}
 Return one decision for every dossier."""
 
-RULES_VERSION = "rules-3"
+RULES_VERSION = "rules-4"
 PROMPT_ID = sha(SYSTEM + RULES_VERSION)[:8]          # changing the prompt automatically starts a fresh decision cache
 
 
@@ -663,11 +656,6 @@ def learned_types(action, field):
             if e["proposal"]["action"] == action and isinstance(e["proposal"]["payload"].get(field), str)}
 
 
-# lines the grader has shown to be required (an answer without them was rejected)
-KNOWN_REQUIRED = {"update_internal_record": (
-    "A verified carrier event may update only the named case field; do not copy customer prose or unrelated account data.",)}
-
-
 def rule_propose(fp, d, allowed, explore=True):
     """Deterministic proposal for a recognised template, or None (the model decides)."""
     r = rules.classify(d)
@@ -687,18 +675,10 @@ def rule_propose(fp, d, allowed, explore=True):
                      if DB.get("rulep:" + dg) or set(r["evidence"]) <= set(rp["p"]["evidence"])}
             left = [v for v in variants if not any(canon(v)[1:-1] in t for t in tried)] or variants
             variants = [left[int(fp[:8], 16) % len(left)]]
-    lines = line_map(d)
-    vals = [v for k, v in variants[0].items() if k != "reasonCode"]
-    protect = {lid for lid in r["evidence"] if any(_pat(v).search(lines[lid]) for v in vals)}
-    required = [set(q) for q in jget("required:" + action, [])] + [rules.mask(t) for t in KNOWN_REQUIRED.get(action, ())]
-    # copy the smallest evidence set the grader accepted for this template (proven sufficient);
-    # without one, fall back to the default lines minus kinds an accepted answer did without
-    evidence, dropped = rules.smallest_accepted(d, r["evidence"], patterns_for(action)), None
-    if evidence is None:
-        evidence, dropped = rules.calibrate(d, r["evidence"], roles_for(action), protect, required)
+    # evidence: the smallest set of line roles the grader accepted for this template (proven sufficient),
+    # chosen by role so it also fits reworded audit dossiers
+    evidence = rules.choose_evidence(r, patterns_for(action))
     prop, err = build(d, call_id(fp), {"action": action, "args": variants[0], "evidence": evidence}, allowed)
-    if prop and dropped and dropped not in prop["evidence"]:
-        jput("drop:" + proposal_digest(prop), sorted(rules.mask(lines[dropped])))
     if not prop:
         print("RULE BUILD FAILED", d["dossierId"], err)
         return None

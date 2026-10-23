@@ -268,3 +268,63 @@ def calibrate(d, evidence, roles, protect=(), required=(), seed=None):
             out.remove(unknown[k])
             return out, unknown[k]
     return out, None
+
+
+# --------------------------------------------------------------- evidence = smallest accepted pattern
+def source_title(d):
+    return {l["lineId"]: (s.get("title") or "") for s in d["sources"] for l in s["lines"]}
+
+
+def template_sig(d, evidence):
+    """Which kinds of source the rule's default evidence comes from: identifies the template variant."""
+    t = source_title(d)
+    return tuple(sorted(t[lid] for lid in evidence))
+
+
+def pattern_of(d, evidence):
+    t, text = source_title(d), {lid: x for lid, x, _s in lines_of(d)}
+    return [(t[lid], mask(text[lid])) for lid in evidence]
+
+
+def apply_pattern(d, pattern):
+    """The lines of d that play the same roles as a cited pattern, or None if one is missing."""
+    t = source_title(d)
+    out = []
+    for title, m in pattern:
+        cands = [(jac(mask(x), m), lid) for lid, x, _s in lines_of(d) if t[lid] == title]
+        best = max(cands, default=(0, None))
+        if best[0] < 0.75:
+            return None
+        if best[1] not in out:
+            out.append(best[1])
+    return out
+
+
+def accepted_patterns(examples, action):
+    """[(template signature, evidence pattern)] for grader-accepted examples of this action."""
+    out = []
+    for e in examples:
+        p = e["proposal"]
+        if p["action"] != action:
+            continue
+        r = classify(e["dossier"])
+        if not r or r["action"] != action:
+            continue
+        out.append((template_sig(e["dossier"], r["evidence"]), pattern_of(e["dossier"], p["evidence"])))
+    return out
+
+
+def smallest_accepted(d, evidence, patterns):
+    """Evidence for d copied from the smallest accepted answer of the same template (proven sufficient)."""
+    sig = template_sig(d, evidence)
+    seen = {}
+    for psig, pat in patterns:
+        if psig != sig:
+            continue
+        lids = apply_pattern(d, pat)
+        if lids:
+            key = tuple(sorted(lids))
+            seen[key] = seen.get(key, 0) + 1
+    if not seen:
+        return None
+    return list(min(seen, key=lambda k: (len(k), -seen[k])))

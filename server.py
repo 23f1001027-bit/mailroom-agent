@@ -369,8 +369,15 @@ EX_CACHE = {"ver": None, "list": [], "roles": {}}
 def load_examples():
     ver = DB.get("examples_ver") or "0"
     if ver != EX_CACHE["ver"]:
-        EX_CACHE.update(ver=ver, list=jget("examples", []), roles={})
+        EX_CACHE.update(ver=ver, list=jget("examples", []), roles={}, patterns={})
     return EX_CACHE["list"]
+
+
+def patterns_for(action):
+    load_examples()
+    if action not in EX_CACHE["patterns"]:
+        EX_CACHE["patterns"][action] = rules.accepted_patterns(EX_CACHE["list"], action)
+    return EX_CACHE["patterns"][action]
 
 
 def roles_for(action):
@@ -467,7 +474,7 @@ OUTPUT JSON only:
 {"decisions":[{"dossierId":"...","analysis":"<= 40 words: who wrote what, what is authorised","action":"<one of the six names>","args":{"<argName>":"<value>"},"evidence":["lineId", "..."]}]}
 Return one decision for every dossier."""
 
-RULES_VERSION = "rules-2"
+RULES_VERSION = "rules-3"
 PROMPT_ID = sha(SYSTEM + RULES_VERSION)[:8]          # changing the prompt automatically starts a fresh decision cache
 
 
@@ -684,12 +691,11 @@ def rule_propose(fp, d, allowed, explore=True):
     vals = [v for k, v in variants[0].items() if k != "reasonCode"]
     protect = {lid for lid in r["evidence"] if any(_pat(v).search(lines[lid]) for v in vals)}
     required = [set(q) for q in jget("required:" + action, [])] + [rules.mask(t) for t in KNOWN_REQUIRED.get(action, ())]
-    seed = None
-    if explore and d.get("partition") == "stable_core" and not DB.get("explored2:" + fp) \
-            and not any(DB.get("drop:" + dg) for dg in rejected(fp)):
-        seed = int(fp[16:24], 16)         # one more trial per core dossier, during the next Check only
-        DB.put("explored2:" + fp, "1")
-    evidence, dropped = rules.calibrate(d, r["evidence"], roles_for(action), protect, required, seed)
+    # copy the smallest evidence set the grader accepted for this template (proven sufficient);
+    # without one, fall back to the default lines minus kinds an accepted answer did without
+    evidence, dropped = rules.smallest_accepted(d, r["evidence"], patterns_for(action)), None
+    if evidence is None:
+        evidence, dropped = rules.calibrate(d, r["evidence"], roles_for(action), protect, required)
     prop, err = build(d, call_id(fp), {"action": action, "args": variants[0], "evidence": evidence}, allowed)
     if prop and dropped and dropped not in prop["evidence"]:
         jput("drop:" + proposal_digest(prop), sorted(rules.mask(lines[dropped])))
